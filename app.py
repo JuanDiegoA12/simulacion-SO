@@ -17,20 +17,26 @@ except ModuleNotFoundError as error:
 from simulador import ESTADOS, Estado, Simulador
 
 
-FONDO = "#f3f4f6"
+FONDO = "#f8fafc"
 BLANCO = "#ffffff"
-TINTA = "#171717"
-GRIS = "#dedede"
-GRIS_OSCURO = "#5a5a5a"
-ACENTO = "#111111"
+TINTA = "#0f172a"
+GRIS = "#e2e8f0"
+GRIS_OSCURO = "#64748b"
+ACENTO = "#2563eb"
+
+COLOR_EJECUCION = "#10b981"  # Verde
+COLOR_BLOQUEADO = "#ef4444"  # Rojo
+COLOR_LISTO = "#3b82f6"      # Azul
+COLOR_SUSPENDIDO = "#f59e0b" # Naranja
+COLOR_TERMINADO = "#475569"  # Gris oscuro
 
 
 class Aplicacion(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Simulador de procesos · Modelo de 7 estados")
-        self.geometry("1180x780")
-        self.minsize(980, 680)
+        self.geometry("1180x820")
+        self.minsize(980, 700)
         self.configure(bg=FONDO)
 
         self.simulador = Simulador()
@@ -62,23 +68,22 @@ class Aplicacion(tk.Tk):
         estilo.configure("Card.TFrame", background=BLANCO)
         estilo.configure("TLabel", background=FONDO, foreground=TINTA, font=("TkDefaultFont", 10))
         estilo.configure("Card.TLabel", background=BLANCO, foreground=TINTA, font=("TkDefaultFont", 10))
-        estilo.configure("Title.TLabel", background=FONDO, foreground=TINTA, font=("TkDefaultFont", 23, "bold"))
-        estilo.configure("Section.TLabel", background=BLANCO, foreground=TINTA, font=("TkDefaultFont", 12, "bold"))
+        estilo.configure("Title.TLabel", background=FONDO, foreground=TINTA, font=("TkDefaultFont", 22, "bold"))
+        estilo.configure("Section.TLabel", background=BLANCO, foreground=TINTA, font=("TkDefaultFont", 11, "bold"))
         estilo.configure("Muted.TLabel", background=BLANCO, foreground=GRIS_OSCURO, font=("TkDefaultFont", 9))
         estilo.configure("TNotebook", background=FONDO, borderwidth=0)
-        estilo.configure("TNotebook.Tab", padding=(18, 11), font=("TkDefaultFont", 10))
-        estilo.map("TNotebook.Tab", background=[("selected", BLANCO)], foreground=[("selected", TINTA)])
-        estilo.configure("Treeview", rowheight=30, font=("TkDefaultFont", 10), background=BLANCO, fieldbackground=BLANCO)
+        estilo.configure("TNotebook.Tab", padding=(16, 10), font=("TkDefaultFont", 10, "bold"))
+        estilo.map("TNotebook.Tab", background=[("selected", BLANCO)], foreground=[("selected", ACENTO)])
+        estilo.configure("Treeview", rowheight=32, font=("TkDefaultFont", 10), background=BLANCO, fieldbackground=BLANCO)
         estilo.configure("Treeview.Heading", font=("TkDefaultFont", 10, "bold"), background=GRIS, foreground=TINTA, padding=8)
-        estilo.map("Treeview", background=[("selected", "#c8c8c8")], foreground=[("selected", TINTA)])
         estilo.configure("Black.TButton", background=ACENTO, foreground=BLANCO, padding=(12, 8), font=("TkDefaultFont", 10, "bold"))
-        estilo.map("Black.TButton", background=[("active", "#333333")])
+        estilo.map("Black.TButton", background=[("active", "#1d4ed8")])
         estilo.configure("TButton", padding=(10, 7))
 
     def _construir_interfaz(self):
         encabezado = ttk.Frame(self, padding=(22, 16, 22, 8))
         encabezado.pack(fill="x")
-        ttk.Label(encabezado, text="Simulador de procesos", style="Title.TLabel").pack(side="left")
+        ttk.Label(encabezado, text="Simulador de Procesos", style="Title.TLabel").pack(side="left")
         ttk.Button(
             encabezado,
             text="+ Crear proceso",
@@ -87,7 +92,7 @@ class Aplicacion(tk.Tk):
         ).pack(side="right", padx=(12, 0))
         ttk.Label(
             encabezado,
-            text="Planificación por orden de llegada",
+            text="Planificación por orden de llegada (FIFO)",
             foreground=GRIS_OSCURO,
         ).pack(side="right", anchor="s", pady=8)
 
@@ -97,24 +102,31 @@ class Aplicacion(tk.Tk):
         self._campo_config(configuracion, "Almacenamiento (MB)", self.almacenamiento_var, 16)
         self._campo_config(configuracion, "Tiempo por pasada (s)", self.intervalo_var, 17)
         ttk.Button(configuracion, text="Aplicar capacidades", command=self._aplicar_capacidades).pack(side="left", padx=(16, 0), pady=(15, 0))
+        
+        ttk.Button(configuracion, text="🧹 Limpiar todo", command=self._limpiar_todo).pack(side="right", padx=(8, 0), pady=(15, 0))
         self.cpu_toggle_button = ttk.Button(configuracion, text="⏸ Pausar", command=self._alternar_cpu)
         self.cpu_toggle_button.pack(side="right", padx=(8, 0), pady=(15, 0))
         ttk.Button(configuracion, text="▶ Paso CPU", command=self._paso_manual).pack(side="right", pady=(15, 0))
-        ttk.Label(configuracion, textvariable=self.estado_cpu_var).pack(side="right", padx=12, pady=(15, 0))
+        ttk.Label(configuracion, textvariable=self.estado_cpu_var, font=("TkDefaultFont", 10, "bold")).pack(side="right", padx=12, pady=(15, 0))
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=22, pady=(0, 20))
         self.pestana_procesos = ttk.Frame(self.notebook, padding=18)
         self.pestana_memoria = ttk.Frame(self.notebook, padding=18)
         self.pestana_almacenamiento = ttk.Frame(self.notebook, padding=18)
+        self.pestana_recursos = ttk.Frame(self.notebook, padding=18)
         self.pestana_estados = ttk.Frame(self.notebook, padding=18)
+
         self.notebook.add(self.pestana_procesos, text="Programas / Procesos")
-        self.notebook.add(self.pestana_memoria, text="Memoria")
+        self.notebook.add(self.pestana_memoria, text="Memoria RAM")
         self.notebook.add(self.pestana_almacenamiento, text="Almacenamiento")
+        self.notebook.add(self.pestana_recursos, text="Estado de Recursos")
         self.notebook.add(self.pestana_estados, text="Modelo de 7 estados")
+
         self._construir_pestana_procesos()
         self._construir_pestana_memoria()
         self._construir_pestana_almacenamiento()
+        self._construir_pestana_recursos()
         self._construir_pestana_estados()
 
     @staticmethod
@@ -133,21 +145,29 @@ class Aplicacion(tk.Tk):
         )
         formulario = ttk.Frame(self.pestana_procesos, style="Card.TFrame", padding=18)
         formulario.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+
+        vcmd_num = (self.register(lambda P: P == "" or (P.isdigit() and len(P) <= 3)), '%P')
+
         for clave, etiqueta in (
             ("nombre", "Nombre"),
             ("tamano", "Tamaño (MB)"),
             ("recursos", "Recursos requeridos"),
-            ("prioridad", "Prioridad"),
+            ("prioridad", "Prioridad (1-99)"),
             ("pasadas", "Pasadas por CPU"),
         ):
             ttk.Label(formulario, text=etiqueta, style="Card.TLabel").pack(anchor="w", pady=(7, 3))
-            entrada = ttk.Entry(formulario, textvariable=self.form_vars[clave])
+            if clave in ("tamano", "prioridad", "pasadas"):
+                entrada = ttk.Entry(formulario, textvariable=self.form_vars[clave], validate="key", validatecommand=vcmd_num)
+            else:
+                entrada = ttk.Entry(formulario, textvariable=self.form_vars[clave])
+
             entrada.pack(fill="x", pady=(0, 6))
             if clave == "nombre":
                 self.nombre_entry = entrada
+
         ttk.Label(
             formulario,
-            text="La prioridad se registra para consulta; esta versión planifica estrictamente por orden de llegada.",
+            text="Los recursos compartidos (ej: Impresora, Disco) bloquean automáticamente los procesos competidores.",
             style="Muted.TLabel",
             wraplength=230,
         ).pack(anchor="w", pady=(8, 12))
@@ -164,15 +184,23 @@ class Aplicacion(tk.Tk):
         lista.columnconfigure(0, weight=1)
         barra = ttk.Frame(lista, style="Card.TFrame")
         barra.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Label(barra, text="Procesos", style="Section.TLabel").pack(side="left")
-        ttk.Label(barra, textvariable=self.cpu_actual_var, style="Muted.TLabel").pack(side="right")
+        ttk.Label(barra, text="Tabla de Procesos Activos", style="Section.TLabel").pack(side="left")
+        ttk.Label(barra, textvariable=self.cpu_actual_var, font=("TkDefaultFont", 10, "bold"), foreground=ACENTO).pack(side="right")
+        
         columnas = ("id", "nombre", "tamano", "recursos", "prioridad", "pasadas", "restantes", "estado")
         self.tabla_procesos = self._crear_tabla(lista, columnas, {
             "id": ("ID", 65), "nombre": ("Nombre", 130), "tamano": ("MB", 55),
-            "recursos": ("Recursos", 130), "prioridad": ("Prioridad", 70),
-            "pasadas": ("Pasadas CPU", 85), "restantes": ("Restantes", 75),
-            "estado": ("Estado", 150),
+            "recursos": ("Recursos", 120), "prioridad": ("Prioridad", 70),
+            "pasadas": ("Pasadas", 75), "restantes": ("Restantes", 75),
+            "estado": ("Estado Actual", 150),
         })
+        
+        self.tabla_procesos.tag_configure("EJECUCION", background="#d1fae5", foreground="#065f46")
+        self.tabla_procesos.tag_configure("BLOQUEADO", background="#fee2e2", foreground="#991b1b")
+        self.tabla_procesos.tag_configure("LISTO", background="#e0f2fe", foreground="#0369a1")
+        self.tabla_procesos.tag_configure("SUSPENDIDO", background="#fef3c7", foreground="#92400e")
+        self.tabla_procesos.tag_configure("TERMINADO", background="#f1f5f9", foreground="#64748b")
+
         self.tabla_procesos.grid(row=1, column=0, sticky="nsew")
         acciones = ttk.Frame(lista, style="Card.TFrame")
         acciones.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -183,27 +211,31 @@ class Aplicacion(tk.Tk):
 
     def _construir_pestana_memoria(self):
         self.pestana_memoria.columnconfigure(0, weight=1)
-        self.pestana_memoria.rowconfigure(2, weight=1)
-        ttk.Label(self.pestana_memoria, text="Memoria", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        self.resumen_memoria = ttk.Label(self.pestana_memoria, text="", font=("TkDefaultFont", 11))
-        self.resumen_memoria.grid(row=1, column=0, sticky="w", pady=(5, 14))
+        self.pestana_memoria.rowconfigure(3, weight=1)
+        ttk.Label(self.pestana_memoria, text="Asignación Contigua de Memoria RAM", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.resumen_memoria = ttk.Label(self.pestana_memoria, text="", font=("TkDefaultFont", 11, "bold"))
+        self.resumen_memoria.grid(row=1, column=0, sticky="w", pady=(4, 6))
+
+        self.canvas_memoria = tk.Canvas(self.pestana_memoria, height=36, background="#e2e8f0", highlightthickness=1, highlightbackground="#cbd5e1")
+        self.canvas_memoria.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+
         panel = ttk.Frame(self.pestana_memoria, style="Card.TFrame", padding=12)
-        panel.grid(row=2, column=0, sticky="nsew")
+        panel.grid(row=3, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(0, weight=1)
         columnas = ("inicio", "fin", "tamano", "proceso", "estado")
         self.tabla_memoria = self._crear_tabla(panel, columnas, {
             "inicio": ("Dirección inicial", 150), "fin": ("Dirección final", 150),
-            "tamano": ("Tamaño (MB)", 100), "proceso": ("Proceso", 180),
-            "estado": ("Estado", 190),
+            "tamano": ("Tamaño (MB)", 100), "proceso": ("Proceso Ocupante", 180),
+            "estado": ("Estado del Proceso", 190),
         })
         self.tabla_memoria.grid(row=0, column=0, sticky="nsew")
 
     def _construir_pestana_almacenamiento(self):
         self.pestana_almacenamiento.columnconfigure(0, weight=1)
         self.pestana_almacenamiento.rowconfigure(2, weight=1)
-        ttk.Label(self.pestana_almacenamiento, text="Almacenamiento", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        self.resumen_almacenamiento = ttk.Label(self.pestana_almacenamiento, text="", font=("TkDefaultFont", 11))
+        ttk.Label(self.pestana_almacenamiento, text="Espacio en Almacenamiento Secundario (Disco)", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        self.resumen_almacenamiento = ttk.Label(self.pestana_almacenamiento, text="", font=("TkDefaultFont", 11, "bold"))
         self.resumen_almacenamiento.grid(row=1, column=0, sticky="w", pady=(5, 14))
         panel = ttk.Frame(self.pestana_almacenamiento, style="Card.TFrame", padding=12)
         panel.grid(row=2, column=0, sticky="nsew")
@@ -211,19 +243,38 @@ class Aplicacion(tk.Tk):
         panel.rowconfigure(0, weight=1)
         columnas = ("bloque", "proceso", "estado", "recursos")
         self.tabla_almacenamiento = self._crear_tabla(panel, columnas, {
-            "bloque": ("Bloques / direcciones", 240), "proceso": ("Proceso", 180),
-            "estado": ("Estado", 210), "recursos": ("Recursos", 220),
+            "bloque": ("Bloques / Direcciones MB", 240), "proceso": ("Proceso", 180),
+            "estado": ("Estado", 210), "recursos": ("Recursos Asignados", 220),
         })
         self.tabla_almacenamiento.grid(row=0, column=0, sticky="nsew")
+
+    def _construir_pestana_recursos(self):
+        self.pestana_recursos.columnconfigure(0, weight=1)
+        self.pestana_recursos.rowconfigure(1, weight=1)
+        ttk.Label(self.pestana_recursos, text="Estado y Retención de Recursos del Sistema", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        panel = ttk.Frame(self.pestana_recursos, style="Card.TFrame", padding=12)
+        panel.grid(row=1, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(0, weight=1)
+        
+        columnas = ("recurso", "estado", "propietario")
+        self.tabla_recursos = self._crear_tabla(panel, columnas, {
+            "recurso": ("Recurso Solicitado / Dispositivo", 240),
+            "estado": ("Estado de Uso", 160),
+            "propietario": ("Proceso Propietario (PID)", 320),
+        })
+        self.tabla_recursos.grid(row=0, column=0, sticky="nsew")
 
     def _construir_pestana_estados(self):
         self.pestana_estados.columnconfigure(0, weight=1)
         self.pestana_estados.rowconfigure(2, weight=1)
-        ttk.Label(self.pestana_estados, text="Modelo de 7 estados", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.pestana_estados, text="Diagrama Dinámico del Modelo de 7 Estados", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             self.pestana_estados,
-            text="Las transiciones manuales permiten explorar bloqueo y suspensión; la CPU atiende los procesos por orden de llegada.",
+            text="Los procesos cambian de estado automáticamente según el uso de la CPU, asignación de memoria y competencia por recursos.",
             wraplength=980,
+            foreground=GRIS_OSCURO,
         ).grid(row=1, column=0, sticky="w", pady=(4, 10))
         cuerpo = ttk.Frame(self.pestana_estados)
         cuerpo.grid(row=2, column=0, sticky="nsew")
@@ -236,13 +287,12 @@ class Aplicacion(tk.Tk):
         log_panel.grid(row=0, column=1, sticky="nsew")
         log_panel.rowconfigure(1, weight=1)
         log_panel.columnconfigure(0, weight=1)
-        ttk.Label(log_panel, text="Registro de eventos", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self.lista_eventos = tk.Listbox(log_panel, font=("TkDefaultFont", 10), background=BLANCO, foreground=TINTA, relief="flat", activestyle="none")
+        ttk.Label(log_panel, text="Registro Histórico de Eventos", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.lista_eventos = tk.Listbox(log_panel, font=("Consolas", 9), background="#0f172a", foreground="#f8fafc", selectbackground="#334155", relief="flat")
         self.lista_eventos.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(log_panel, orient="vertical", command=self.lista_eventos.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.lista_eventos.configure(yscrollcommand=scrollbar.set)
-        self._dibujar_diagrama()
 
     @staticmethod
     def _crear_tabla(parent, columnas, configuracion):
@@ -303,12 +353,12 @@ class Aplicacion(tk.Tk):
         ventana.grab_set()
         contenido = ttk.Frame(ventana, padding=20)
         contenido.pack(fill="both", expand=True)
-        ttk.Label(contenido, text="Crear un proceso", style="Title.TLabel").pack(
+        ttk.Label(contenido, text="Crear un nuevo proceso", style="Title.TLabel").pack(
             anchor="w", pady=(0, 8)
         )
         ttk.Label(
             contenido,
-            text="Completa los datos y pulsa el botón para agregarlo a la tabla.",
+            text="Especifica los parámetros de memoria y recursos requeridos.",
             wraplength=320,
         ).pack(anchor="w", pady=(0, 12))
 
@@ -323,7 +373,7 @@ class Aplicacion(tk.Tk):
             ("nombre", "Nombre"),
             ("tamano", "Tamaño (MB)"),
             ("recursos", "Recursos requeridos"),
-            ("prioridad", "Prioridad"),
+            ("prioridad", "Prioridad (1-99)"),
             ("pasadas", "Pasadas por CPU"),
         ):
             ttk.Label(contenido, text=etiqueta).pack(anchor="w", pady=(6, 2))
@@ -334,7 +384,7 @@ class Aplicacion(tk.Tk):
 
         ttk.Button(
             contenido,
-            text="＋  CREAR PROCESO Y AGREGAR A LA TABLA",
+            text="＋  CREAR PROCESO",
             style="Black.TButton",
             command=lambda: self._guardar_proceso(
                 variables["nombre"].get(),
@@ -371,6 +421,11 @@ class Aplicacion(tk.Tk):
             messagebox.showerror("Capacidad no válida", str(error), parent=self)
             return
         self._refrescar()
+
+    def _limpiar_todo(self):
+        if messagebox.askyesno("Limpiar simulación", "¿Deseas reiniciar la simulación y borrar los procesos actuales?", parent=self):
+            self.simulador.limpiar_simulacion()
+            self._refrescar()
 
     def _alternar_cpu(self):
         self.ejecutando = not self.ejecutando
@@ -435,18 +490,53 @@ class Aplicacion(tk.Tk):
     def _reanudar(self):
         self._ejecutar_accion(self.simulador.reanudar)
 
+    def _dibujar_barras_memoria(self):
+        canvas = self.canvas_memoria
+        canvas.delete("all")
+        ancho_total = max(canvas.winfo_width(), 600)
+        alto = canvas.winfo_height()
+        mem_total = self.simulador.memoria_mb
+        
+        if mem_total == 0:
+            return
+
+        mapa_procesos = {p.id: p for p in self.simulador.procesos}
+        for inicio, fin, pid in self.simulador.segmentos_memoria():
+            x1 = (inicio / mem_total) * ancho_total
+            x2 = ((fin + 1) / mem_total) * ancho_total
+            
+            if pid:
+                proc = mapa_procesos.get(pid)
+                color = COLOR_EJECUCION if proc and proc.estado == Estado.EJECUCION else COLOR_LISTO
+                canvas.create_rectangle(x1, 2, x2, alto - 2, fill=color, outline="#ffffff", width=1)
+                if (x2 - x1) > 25:
+                    canvas.create_text((x1 + x2) / 2, alto / 2, text=f"{pid}", fill="#ffffff", font=("TkDefaultFont", 9, "bold"))
+            else:
+                canvas.create_rectangle(x1, 2, x2, alto - 2, fill="#cbd5e1", outline="#ffffff", width=1)
+
     def _refrescar(self):
         procesos = self.simulador.procesos
-        self._reemplazar_filas(
-            self.tabla_procesos,
-            [
-                (
-                    p.id, p.nombre, p.tamano_mb, p.recursos, p.prioridad,
-                    p.pasadas_cpu, p.restantes, p.estado.value,
-                )
-                for p in procesos
-            ],
-        )
+        mapa_procesos = {p.id: p for p in procesos}
+
+        for item in self.tabla_procesos.get_children():
+            self.tabla_procesos.delete(item)
+            
+        for p in procesos:
+            tag = "TERMINADO"
+            if p.estado == Estado.EJECUCION:
+                tag = "EJECUCION"
+            elif p.estado == Estado.BLOQUEADO:
+                tag = "BLOQUEADO"
+            elif p.estado == Estado.LISTO:
+                tag = "LISTO"
+            elif "SUSPENDIDO" in p.estado.name:
+                tag = "SUSPENDIDO"
+
+            self.tabla_procesos.insert("", "end", iid=p.id, values=(
+                p.id, p.nombre, p.tamano_mb, p.recursos, p.prioridad,
+                p.pasadas_cpu, p.restantes, p.estado.value
+            ), tags=(tag,))
+
         actual = self.simulador.proceso_ejecutando
         self.cpu_actual_var.set(
             f"En CPU: {actual.id} · {actual.nombre}"
@@ -459,7 +549,6 @@ class Aplicacion(tk.Tk):
             f"{self.simulador.memoria_libre_mb} MB libres"
         )
         filas_memoria = []
-        mapa_procesos = {p.id: p for p in procesos}
         for inicio, fin, pid in self.simulador.segmentos_memoria():
             proceso = mapa_procesos.get(pid) if pid else None
             filas_memoria.append(
@@ -472,6 +561,7 @@ class Aplicacion(tk.Tk):
                 )
             )
         self._reemplazar_filas(self.tabla_memoria, filas_memoria)
+        self._dibujar_barras_memoria()
 
         self.resumen_almacenamiento.configure(
             text=f"{self.simulador.almacenamiento_mb} MB totales · "
@@ -489,6 +579,17 @@ class Aplicacion(tk.Tk):
                 )
             )
         self._reemplazar_filas(self.tabla_almacenamiento, filas_almacenamiento)
+
+        filas_recursos = []
+        for rec, pid in self.simulador._recursos_ocupados.items():
+            proc = mapa_procesos.get(pid)
+            nombre_proc = proc.nombre if proc else "—"
+            filas_recursos.append((rec, "OCUPADO", f"{pid} · {nombre_proc}"))
+        
+        if not filas_recursos:
+            filas_recursos.append(("Sin recursos retenidos", "LIBRES", "—"))
+            
+        self._reemplazar_filas(self.tabla_recursos, filas_recursos)
 
         self.lista_eventos.delete(0, tk.END)
         for evento in self.simulador.eventos[:100]:
@@ -550,23 +651,38 @@ class Aplicacion(tk.Tk):
             distancia = max((dx * dx + dy * dy) ** 0.5, 1)
             start = (x1 + dx / distancia * (rx1 - 4), y1 + dy / distancia * (ry1 - 4))
             end = (x2 - dx / distancia * (rx2 + 4), y2 - dy / distancia * (ry2 + 4))
-            canvas.create_line(*start, *end, fill=TINTA, width=2, arrow=tk.LAST)
+            canvas.create_line(*start, *end, fill=GRIS_OSCURO, width=2, arrow=tk.LAST)
+
+        colores_estado = {
+            "Nuevo": GRIS_OSCURO,
+            Estado.LISTO_SUSPENDIDO.value: COLOR_SUSPENDIDO,
+            Estado.LISTO.value: COLOR_LISTO,
+            Estado.EJECUCION.value: COLOR_EJECUCION,
+            Estado.TERMINADO.value: COLOR_TERMINADO,
+            Estado.BLOQUEADO_SUSPENDIDO.value: COLOR_SUSPENDIDO,
+            Estado.BLOQUEADO.value: COLOR_BLOQUEADO,
+        }
 
         conteos = {estado: 0 for estado in ESTADOS}
         for proceso in self.simulador.procesos:
             conteos[proceso.estado.value] += 1
         conteos["Nuevo"] = 0
+
         for estado, (cx, cy, rx, ry) in nodos.items():
             conteo = conteos[estado]
-            relleno = TINTA if conteo else GRIS
-            texto = BLANCO if conteo else TINTA
+            col_base = colores_estado[estado]
+            
+            relleno = col_base if conteo > 0 else "#f1f5f9"
+            texto_col = BLANCO if conteo > 0 else TINTA
+            grosor = 3 if conteo > 0 else 1
+
             canvas.create_oval(
                 cx - rx, cy - ry, cx + rx, cy + ry,
-                fill=relleno, outline=TINTA, width=2,
+                fill=relleno, outline=col_base if conteo > 0 else GRIS, width=grosor,
             )
             etiqueta = f"{estado}\n{conteo} proceso" + ("" if conteo == 1 else "s")
             canvas.create_text(
-                cx, cy, text=etiqueta, fill=texto, width=rx * 1.8,
+                cx, cy, text=etiqueta, fill=texto_col, width=rx * 1.8,
                 font=("TkDefaultFont", 10, "bold"),
             )
 
