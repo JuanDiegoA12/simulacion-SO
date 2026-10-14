@@ -49,6 +49,8 @@ class Simulador:
         self._ejecutando = None
         self._siguiente_id = 1
         self.eventos = ["Simulación lista."]
+        # Diccionario para controlar el propietario de cada recurso: { "Impresora": "P001" }
+        self._recursos_ocupados = {}
 
     @staticmethod
     def _validar_capacidad(capacidad, nombre):
@@ -132,14 +134,66 @@ class Simulador:
     def _despachar(self):
         if self._ejecutando is not None:
             return
-        while self._cola_listos:
-            pid = self._cola_listos.pop(0)
+        
+        # Recorremos la cola de listos para encontrar un proceso cuyos recursos estén disponibles
+        indices_a_revisar = list(range(len(self._cola_listos)))
+        for i in indices_a_revisar:
+            pid = self._cola_listos[i]
             proceso = self._proceso(pid)
+            
             if proceso.estado == Estado.LISTO:
+                recurso_requerido = proceso.recursos.strip()
+                
+                # Evaluar si requiere recurso y si está siendo usado por otro proceso
+                if recurso_requerido and recurso_requerido.lower() != "ninguno":
+                    propietario_actual = self._recursos_ocupados.get(recurso_requerido)
+                    
+                    if propietario_actual is not None and propietario_actual != pid:
+                        # El recurso está ocupado -> Bloqueo automático
+                        self._cola_listos.pop(i)
+                        proceso.estado = Estado.BLOQUEADO
+                        self.eventos.insert(
+                            0,
+                            f"{pid} ({proceso.nombre}) pasa a BLOQUEADO: "
+                            f"recurso '{recurso_requerido}' retenido por {propietario_actual}.",
+                        )
+                        # Intenta despachar el siguiente de la cola de listos
+                        self._despachar()
+                        return
+
+                    # Si estaba libre, se le asigna el recurso
+                    self._recursos_ocupados[recurso_requerido] = pid
+
+                # Asignar a CPU
+                self._cola_listos.pop(i)
                 proceso.estado = Estado.EJECUCION
                 self._ejecutando = pid
                 self.eventos.insert(0, f"{pid} ({proceso.nombre}) entra a Ejecución.")
                 return
+
+    def _liberar_recursos(self, pid):
+        """Libera todos los recursos retenidos por un proceso al terminar."""
+        recursos_a_liberar = [
+            rec for rec, propietario in self._recursos_ocupados.items() if propietario == pid
+        ]
+        for rec in recursos_a_liberar:
+            del self._recursos_ocupados[rec]
+            self.eventos.insert(0, f"Recurso '{rec}' liberado por {pid}.")
+            
+            # Revisar si hay procesos BLOQUEADOS o BLOQUEADOS_SUSPENDIDOS esperando este recurso
+            for proceso in self.procesos:
+                if proceso.recursos.strip() == rec:
+                    if proceso.estado == Estado.BLOQUEADO:
+                        proceso.estado = Estado.LISTO
+                        self._cola_listos.append(proceso.id)
+                        self.eventos.insert(
+                            0, f"{proceso.id} ({proceso.nombre}) se desbloqueó (recurso '{rec}' libre)."
+                        )
+                    elif proceso.estado == Estado.BLOQUEADO_SUSPENDIDO:
+                        proceso.estado = Estado.LISTO_SUSPENDIDO
+                        self.eventos.insert(
+                            0, f"{proceso.id} ({proceso.nombre}) cambió a Listo Suspendido (recurso '{rec}' libre)."
+                        )
 
     def avanzar(self):
         """Consume una pasada de CPU y despacha el siguiente proceso en espera."""
@@ -149,10 +203,12 @@ class Simulador:
         proceso = self._proceso(self._ejecutando)
         proceso.restantes -= 1
         pid_ejecutado = proceso.id
+        
         if proceso.restantes == 0:
             proceso.estado = Estado.TERMINADO
             self._liberar(self._memoria, pid_ejecutado)
             self._liberar(self._almacenamiento, pid_ejecutado)
+            self._liberar_recursos(pid_ejecutado)
             self._ejecutando = None
             self.eventos.insert(0, f"{pid_ejecutado} ({proceso.nombre}) terminó.")
         else:
@@ -267,6 +323,17 @@ class Simulador:
             f"Capacidades actualizadas: memoria {memoria_mb} MB, "
             f"almacenamiento {almacenamiento_mb} MB.",
         )
+
+    def limpiar_simulacion(self):
+        """Reinicia la simulación: borra procesos y libera memoria, almacenamiento y recursos."""
+        self.procesos = []
+        self._memoria = [None] * self.memoria_mb
+        self._almacenamiento = [None] * self.almacenamiento_mb
+        self._cola_listos = []
+        self._ejecutando = None
+        self._recursos_ocupados = {}
+        self._siguiente_id = 1
+        self.eventos = ["Simulación reiniciada."]
 
     @staticmethod
     def _liberar(bloques, pid):
