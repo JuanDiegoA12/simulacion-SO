@@ -79,12 +79,13 @@ class Aplicacion(tk.Tk):
         encabezado = ttk.Frame(self, padding=(22, 16, 22, 8))
         encabezado.pack(fill="x")
         ttk.Label(encabezado, text="Simulador de procesos", style="Title.TLabel").pack(side="left")
-        ttk.Button(
+        self.boton_crear_proceso = ttk.Button(
             encabezado,
             text="+ Crear proceso",
             style="Black.TButton",
-            command=self._abrir_creacion_proceso,
-        ).pack(side="right", padx=(12, 0))
+            command=self._crear_proceso,
+        )
+        self.boton_crear_proceso.pack(side="right", padx=(12, 0))
         ttk.Label(
             encabezado,
             text="Planificación por orden de llegada",
@@ -263,104 +264,22 @@ class Aplicacion(tk.Tk):
         return tabla
 
     def _crear_proceso(self):
-        self._guardar_proceso(
-            self.form_vars["nombre"].get(),
-            self.form_vars["tamano"].get(),
-            self.form_vars["recursos"].get(),
-            self.form_vars["prioridad"].get(),
-            self.form_vars["pasadas"].get(),
-            self,
-        )
-
-    def _guardar_proceso(self, nombre, tamano, recursos, prioridad, pasadas, ventana):
         try:
             proceso = self.simulador.crear_proceso(
-                nombre,
-                int(tamano),
-                recursos,
-                int(prioridad),
-                int(pasadas),
+                self.form_vars["nombre"].get(),
+                int(self.form_vars["tamano"].get()),
+                self.form_vars["recursos"].get(),
+                int(self.form_vars["prioridad"].get()),
+                int(self.form_vars["pasadas"].get()),
             )
         except ValueError as error:
-            messagebox.showerror("No se pudo crear el proceso", str(error), parent=ventana)
-            return False
-        if ventana == self:
-            self.form_vars["nombre"].set("")
-        else:
-            ventana.destroy()
+            messagebox.showerror("No se pudo crear el proceso", str(error), parent=self)
+            return
+        self.form_vars["nombre"].set("")
         self._refrescar()
         self.notebook.select(self.pestana_procesos)
         self.tabla_procesos.selection_set(proceso.id)
         self.tabla_procesos.see(proceso.id)
-        return True
-
-    def _abrir_creacion_proceso(self):
-        ventana = tk.Toplevel(self)
-        ventana.title("Crear proceso")
-        ventana.transient(self)
-        ventana.resizable(False, False)
-        ventana.configure(bg=FONDO)
-        ventana.grab_set()
-        contenido = ttk.Frame(ventana, padding=20)
-        contenido.pack(fill="both", expand=True)
-        ttk.Label(contenido, text="Crear un proceso", style="Title.TLabel").pack(
-            anchor="w", pady=(0, 8)
-        )
-        ttk.Label(
-            contenido,
-            text="Completa los datos y pulsa el botón para agregarlo a la tabla.",
-            wraplength=320,
-        ).pack(anchor="w", pady=(0, 12))
-
-        variables = {
-            "nombre": tk.StringVar(),
-            "tamano": tk.StringVar(value="4"),
-            "recursos": tk.StringVar(value="Ninguno"),
-            "prioridad": tk.StringVar(value="1"),
-            "pasadas": tk.StringVar(value="3"),
-        }
-        for clave, etiqueta in (
-            ("nombre", "Nombre"),
-            ("tamano", "Tamaño (MB)"),
-            ("recursos", "Recursos requeridos"),
-            ("prioridad", "Prioridad"),
-            ("pasadas", "Pasadas por CPU"),
-        ):
-            ttk.Label(contenido, text=etiqueta).pack(anchor="w", pady=(6, 2))
-            entrada = ttk.Entry(contenido, textvariable=variables[clave], width=38)
-            entrada.pack(fill="x")
-            if clave == "nombre":
-                entrada.focus_set()
-
-        ttk.Button(
-            contenido,
-            text="＋  CREAR PROCESO Y AGREGAR A LA TABLA",
-            style="Black.TButton",
-            command=lambda: self._guardar_proceso(
-                variables["nombre"].get(),
-                variables["tamano"].get(),
-                variables["recursos"].get(),
-                variables["prioridad"].get(),
-                variables["pasadas"].get(),
-                ventana,
-            ),
-        ).pack(fill="x", ipady=5, pady=(18, 0))
-        ventana.bind(
-            "<Return>",
-            lambda _evento: self._guardar_proceso(
-                variables["nombre"].get(),
-                variables["tamano"].get(),
-                variables["recursos"].get(),
-                variables["prioridad"].get(),
-                variables["pasadas"].get(),
-                ventana,
-            ),
-        )
-        ventana.update_idletasks()
-        ventana.geometry(
-            f"+{self.winfo_rootx() + (self.winfo_width() - ventana.winfo_width()) // 2}"
-            f"+{self.winfo_rooty() + (self.winfo_height() - ventana.winfo_height()) // 2}"
-        )
 
     def _aplicar_capacidades(self):
         try:
