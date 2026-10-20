@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 from enum import Enum
 
@@ -21,6 +22,13 @@ ESTADOS = (
     Estado.BLOQUEADO_SUSPENDIDO.value,
 )
 
+# Prioridad de llegada a la cola de Listos (menor valor = mayor prioridad).
+# Se aplica para desempatar procesos que llegan a la cola en el mismo instante:
+#  1) los que vienen de Ejecución, 2) los que vienen de Bloqueado, 3) los nuevos.
+ORIGEN_EJECUCION = 0
+ORIGEN_BLOQUEADO = 1
+ORIGEN_NUEVO = 2
+
 
 @dataclass
 class Proceso:
@@ -32,22 +40,31 @@ class Proceso:
     pasadas_cpu: int
     restantes: int
     estado: Estado = Estado.LISTO
+    # Recurso por el que el proceso está bloqueado (None si el bloqueo es manual).
+    espera_recurso: str | None = None
+    # Prioridad y marca de tiempo con que fue encolado (para el desempate).
+    prioridad_cola: int = ORIGEN_NUEVO
+    instante_cola: int = 0
 
 
 class Simulador:
     """Motor de procesos con asignación contigua de memoria y almacenamiento."""
 
-    def __init__(self, memoria_mb=64, almacenamiento_mb=128):
+    def __init__(self, memoria_mb=64, almacenamiento_mb=128, probabilidad_soltar_recurso=0.5):
         self._validar_capacidad(memoria_mb, "memoria")
         self._validar_capacidad(almacenamiento_mb, "almacenamiento")
+        if not 0 <= probabilidad_soltar_recurso <= 1:
+            raise ValueError("La probabilidad de soltar el recurso debe estar entre 0 y 1.")
         self.memoria_mb = memoria_mb
         self.almacenamiento_mb = almacenamiento_mb
+        self.probabilidad_soltar_recurso = probabilidad_soltar_recurso
         self.procesos = []
         self._memoria = [None] * memoria_mb
         self._almacenamiento = [None] * almacenamiento_mb
         self._cola_listos = []
         self._ejecutando = None
         self._siguiente_id = 1
+        self._instante = 0
         self.eventos = ["Simulación lista."]
         # Diccionario para controlar el propietario de cada recurso: { "Impresora": "P001" }
         self._recursos_ocupados = {}
@@ -56,6 +73,11 @@ class Simulador:
     def _validar_capacidad(capacidad, nombre):
         if not isinstance(capacidad, int) or capacidad < 1:
             raise ValueError(f"La capacidad de {nombre} debe ser un entero mayor que cero.")
+
+    @staticmethod
+    def _es_recurso(recurso):
+        """True si el texto representa un recurso real (no vacío ni 'Ninguno')."""
+        return bool(recurso) and recurso.lower() != "ninguno"
 
     def crear_proceso(self, nombre, tamano_mb, recursos, prioridad, pasadas_cpu):
         nombre = nombre.strip()
@@ -107,7 +129,8 @@ class Simulador:
         )
         self.procesos.append(proceso)
         self._siguiente_id += 1
-        self._cola_listos.append(pid)
+        self._instante += 1
+        self._encolar(pid, ORIGEN_NUEVO)
         self.eventos.insert(0, f"{pid} ({nombre}) creado y agregado a Listo.")
         self._despachar()
         return proceso
@@ -131,45 +154,106 @@ class Simulador:
                 return proceso
         raise ValueError("No se encontró el proceso seleccionado.")
 
+    def _encolar(self, pid, origen):
+        """Inserta en la cola de Listos respetando el orden de llegada.
+
+        El orden de llegada (FIFO) manda; la prioridad de origen solo desempata
+        procesos que llegan en el mismo instante: primero los que vienen de
+        Ejecución, luego los que vienen de Bloqueado y por último los nuevos.
+        """
+        proceso = self._proceso(pid)
+        proceso.prioridad_cola = origen
+        proceso.instante_cola = self._instante
+        self._cola_listos.append(pid)
+        indice = len(self._cola_listos) - 1
+        while indice > 0:
+            anterior = self._proceso(self._cola_listos[indice - 1])
+            mismo_instante = anterior.instante_cola == proceso.instante_cola
+            if mismo_instante and anterior.prioridad_cola > origen:
+                self._cola_listos[indice - 1], self._cola_listos[indice] = (
+                    self._cola_listos[indice],
+                    self._cola_listos[indice - 1],
+                )
+                indice -= 1
+            else:
+                break
+
+    def _hay_competencia(self, recurso, pid):
+        """True si otro proceso alcanzable necesita el mismo recurso."""
+        for proceso in self.procesos:
+            if proceso.id == pid or proceso.estado == Estado.TERMINADO:
+                continue
+            if proceso.recursos.strip() != recurso:
+                continue
+            if proceso.estado == Estado.LISTO:
+                return True
+            if proceso.estado == Estado.BLOQUEADO and proceso.espera_recurso == recurso:
+                return True
+        return False
+
+    def _bloquear_por_recurso(self, proceso, recurso, propietario):
+        """El proceso pasa por Ejecución y queda Bloqueado sin consumir CPU."""
+        proceso.estado = Estado.EJECUCION
+        proceso.estado = Estado.BLOQUEADO
+        proceso.espera_recurso = recurso
+        self.eventos.insert(
+            0,
+            f"{proceso.id} ({proceso.nombre}) pasó por Ejecución y quedó BLOQUEADO: "
+            f"recurso '{recurso}' retenido por {propietario} (sin consumir CPU).",
+        )
+
+    def _desbloquear_espera(self, recurso, excepto=None):
+        """Despierta solo a los procesos que esperan este recurso.
+
+        Los bloqueados por otros recursos, o de forma manual, no se ven afectados.
+        """
+        for proceso in self.procesos:
+            if proceso.id == excepto or proceso.espera_recurso != recurso:
+                continue
+            if proceso.estado == Estado.BLOQUEADO:
+                proceso.espera_recurso = None
+                proceso.estado = Estado.LISTO
+                self._encolar(proceso.id, ORIGEN_BLOQUEADO)
+                self.eventos.insert(
+                    0,
+                    f"{proceso.id} ({proceso.nombre}) se desbloqueó (recurso '{recurso}' libre).",
+                )
+            elif proceso.estado == Estado.BLOQUEADO_SUSPENDIDO:
+                proceso.espera_recurso = None
+                proceso.estado = Estado.LISTO_SUSPENDIDO
+                self.eventos.insert(
+                    0,
+                    f"{proceso.id} ({proceso.nombre}) cambió a Listo Suspendido "
+                    f"(recurso '{recurso}' libre).",
+                )
+
     def _despachar(self):
         if self._ejecutando is not None:
             return
-        
-        # Recorremos la cola de listos para encontrar un proceso cuyos recursos estén disponibles
-        indices_a_revisar = list(range(len(self._cola_listos)))
-        for i in indices_a_revisar:
-            pid = self._cola_listos[i]
+        while self._cola_listos:
+            pid = self._cola_listos[0]
             proceso = self._proceso(pid)
-            
-            if proceso.estado == Estado.LISTO:
-                recurso_requerido = proceso.recursos.strip()
-                
-                # Evaluar si requiere recurso y si está siendo usado por otro proceso
-                if recurso_requerido and recurso_requerido.lower() != "ninguno":
-                    propietario_actual = self._recursos_ocupados.get(recurso_requerido)
-                    
-                    if propietario_actual is not None and propietario_actual != pid:
-                        # El recurso está ocupado -> Bloqueo automático
-                        self._cola_listos.pop(i)
-                        proceso.estado = Estado.BLOQUEADO
-                        self.eventos.insert(
-                            0,
-                            f"{pid} ({proceso.nombre}) pasa a BLOQUEADO: "
-                            f"recurso '{recurso_requerido}' retenido por {propietario_actual}.",
-                        )
-                        # Intenta despachar el siguiente de la cola de listos
-                        self._despachar()
-                        return
+            if proceso.estado != Estado.LISTO:
+                self._cola_listos.pop(0)
+                continue
 
-                    # Si estaba libre, se le asigna el recurso
-                    self._recursos_ocupados[recurso_requerido] = pid
+            recurso_requerido = proceso.recursos.strip()
+            if self._es_recurso(recurso_requerido):
+                propietario_actual = self._recursos_ocupados.get(recurso_requerido)
+                if propietario_actual is not None and propietario_actual != pid:
+                    # El recurso lo tiene otro: pasa por Ejecución y se bloquea
+                    # inmediatamente sin descontar tiempo de CPU.
+                    self._cola_listos.pop(0)
+                    self._bloquear_por_recurso(proceso, recurso_requerido, propietario_actual)
+                    continue
+                # Recurso libre: se le asigna.
+                self._recursos_ocupados[recurso_requerido] = pid
 
-                # Asignar a CPU
-                self._cola_listos.pop(i)
-                proceso.estado = Estado.EJECUCION
-                self._ejecutando = pid
-                self.eventos.insert(0, f"{pid} ({proceso.nombre}) entra a Ejecución.")
-                return
+            self._cola_listos.pop(0)
+            proceso.estado = Estado.EJECUCION
+            self._ejecutando = pid
+            self.eventos.insert(0, f"{pid} ({proceso.nombre}) entra a Ejecución.")
+            return
 
     def _liberar_recursos(self, pid):
         """Libera todos los recursos retenidos por un proceso al terminar."""
@@ -179,46 +263,53 @@ class Simulador:
         for rec in recursos_a_liberar:
             del self._recursos_ocupados[rec]
             self.eventos.insert(0, f"Recurso '{rec}' liberado por {pid}.")
-            
-            # Revisar si hay procesos BLOQUEADOS o BLOQUEADOS_SUSPENDIDOS esperando este recurso
-            for proceso in self.procesos:
-                if proceso.recursos.strip() == rec:
-                    if proceso.estado == Estado.BLOQUEADO:
-                        proceso.estado = Estado.LISTO
-                        self._cola_listos.append(proceso.id)
-                        self.eventos.insert(
-                            0, f"{proceso.id} ({proceso.nombre}) se desbloqueó (recurso '{rec}' libre)."
-                        )
-                    elif proceso.estado == Estado.BLOQUEADO_SUSPENDIDO:
-                        proceso.estado = Estado.LISTO_SUSPENDIDO
-                        self.eventos.insert(
-                            0, f"{proceso.id} ({proceso.nombre}) cambió a Listo Suspendido (recurso '{rec}' libre)."
-                        )
+            self._desbloquear_espera(rec)
 
     def avanzar(self):
         """Consume una pasada de CPU y despacha el siguiente proceso en espera."""
         self._despachar()
         if self._ejecutando is None:
             return None
+        self._instante += 1
         proceso = self._proceso(self._ejecutando)
         proceso.restantes -= 1
         pid_ejecutado = proceso.id
-        
+        self._ejecutando = None
+
         if proceso.restantes == 0:
             proceso.estado = Estado.TERMINADO
             self._liberar(self._memoria, pid_ejecutado)
             self._liberar(self._almacenamiento, pid_ejecutado)
-            self._liberar_recursos(pid_ejecutado)
-            self._ejecutando = None
             self.eventos.insert(0, f"{pid_ejecutado} ({proceso.nombre}) terminó.")
+            self._liberar_recursos(pid_ejecutado)
         else:
-            proceso.estado = Estado.LISTO
-            self._cola_listos.append(pid_ejecutado)
-            self._ejecutando = None
-            self.eventos.insert(
-                0,
-                f"{pid_ejecutado} completó una pasada; vuelve al final de Listo.",
+            recurso = proceso.recursos.strip()
+            retiene = (
+                self._es_recurso(recurso)
+                and self._recursos_ocupados.get(recurso) == pid_ejecutado
             )
+            if (
+                retiene
+                and self._hay_competencia(recurso, pid_ejecutado)
+                and random.random() < self.probabilidad_soltar_recurso
+            ):
+                # Suelta el recurso y espera a que vuelva a liberarse.
+                del self._recursos_ocupados[recurso]
+                proceso.estado = Estado.BLOQUEADO
+                proceso.espera_recurso = recurso
+                self.eventos.insert(
+                    0,
+                    f"{pid_ejecutado} ({proceso.nombre}) soltó el recurso '{recurso}' "
+                    f"y pasa a BLOQUEADO hasta que se libere.",
+                )
+                self._desbloquear_espera(recurso, excepto=pid_ejecutado)
+            else:
+                proceso.estado = Estado.LISTO
+                self._encolar(pid_ejecutado, ORIGEN_EJECUCION)
+                self.eventos.insert(
+                    0,
+                    f"{pid_ejecutado} ({proceso.nombre}) completó una pasada; vuelve a Listo.",
+                )
         self._despachar()
         return proceso
 
@@ -251,7 +342,9 @@ class Simulador:
         if proceso.estado != Estado.BLOQUEADO:
             raise ValueError("Selecciona un proceso que esté en estado Bloqueado.")
         proceso.estado = Estado.LISTO
-        self._cola_listos.append(pid)
+        proceso.espera_recurso = None
+        self._instante += 1
+        self._encolar(pid, ORIGEN_BLOQUEADO)
         self.eventos.insert(0, f"{pid} ({proceso.nombre}) volvió a Listo.")
         self._despachar()
 
@@ -292,7 +385,8 @@ class Simulador:
         self._asignar(self._memoria, inicio, proceso.tamano_mb, pid)
         proceso.estado = siguiente_estado
         if siguiente_estado == Estado.LISTO:
-            self._cola_listos.append(pid)
+            self._instante += 1
+            self._encolar(pid, ORIGEN_BLOQUEADO)
             self._despachar()
         self.eventos.insert(
             0, f"{pid} ({proceso.nombre}) se reanudó como {siguiente_estado.value}."
@@ -333,6 +427,7 @@ class Simulador:
         self._ejecutando = None
         self._recursos_ocupados = {}
         self._siguiente_id = 1
+        self._instante = 0
         self.eventos = ["Simulación reiniciada."]
 
     @staticmethod

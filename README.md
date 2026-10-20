@@ -19,11 +19,11 @@ También se puede abrir la carpeta en Visual Studio Code y ejecutar `app.py`.
 
 1. Configura la memoria y el almacenamiento en MB, y el intervalo de cada pasada de CPU en segundos.
 2. Crea procesos con nombre, tamaño, recursos, prioridad y cantidad de pasadas por CPU.
-3. La planificación sigue el orden de llegada. Al crearse, un proceso entra a Listo y toma la CPU inmediatamente si está libre. En cada pasada, si aún le queda trabajo vuelve al final de la cola; al completar todas sus pasadas termina y libera memoria y almacenamiento.
+3. La planificación sigue el orden de llegada (turno rotatorio). Al crearse, un proceso entra a Listo y toma la CPU si está libre. Si requiere un recurso (por ejemplo "Impresora") y otro proceso lo retiene, pasa por Ejecución y queda Bloqueado sin consumir CPU; se desbloquea cuando ese recurso se libera. Al terminar cada pasada, un proceso que retiene un recurso disputado puede soltarlo (de forma aleatoria) y pasar a Bloqueado hasta que se libere, o conservarlo y volver a Listo. Al completar todas sus pasadas termina y libera memoria, almacenamiento y recursos.
 4. Pausa la CPU o avanza una pasada manualmente. Las acciones de bloqueo, desbloqueo, suspensión y reanudación permiten explorar las transiciones restantes del modelo.
-5. Consulta las asignaciones y estados en las pestañas de memoria, almacenamiento y modelo de 7 estados.
+5. Consulta las asignaciones y estados en las pestañas de memoria, almacenamiento, estado de recursos y modelo de 7 estados.
 
-La prioridad se guarda y se muestra, pero no altera el orden de llegada. La memoria se asigna en bloques contiguos de 1 MB; el almacenamiento conserva la asignación del proceso hasta que termina.
+La prioridad numérica se guarda y se muestra, pero no altera el orden de llegada. Cuando varios procesos llegan a la cola en el mismo instante se desempatan por origen: primero los que vienen de Ejecución, luego los que vienen de Bloqueado y por último los nuevos. La memoria se asigna en bloques contiguos de 1 MB; el almacenamiento conserva la asignación del proceso hasta que termina.
 
 ## Pruebas del motor
 
