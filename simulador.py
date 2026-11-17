@@ -1,5 +1,5 @@
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -36,12 +36,12 @@ class Proceso:
     nombre: str
     tamano_mb: int
     recursos: str
-    prioridad: int
+    prioritario: bool
     pasadas_cpu: int
     restantes: int
     estado: Estado = Estado.LISTO
-    # Recurso por el que el proceso está bloqueado (None si el bloqueo es manual).
-    espera_recurso: str | None = None
+    # Recursos por los que el proceso está bloqueado (vacío si el bloqueo es manual).
+    espera_recursos: set = field(default_factory=set)
     # Prioridad y marca de tiempo con que fue encolado (para el desempate).
     prioridad_cola: int = ORIGEN_NUEVO
     instante_cola: int = 0
@@ -79,7 +79,23 @@ class Simulador:
         """True si el texto representa un recurso real (no vacío ni 'Ninguno')."""
         return bool(recurso) and recurso.lower() != "ninguno"
 
-    def crear_proceso(self, nombre, tamano_mb, recursos, prioridad, pasadas_cpu):
+    @classmethod
+    def _lista_recursos(cls, texto):
+        """Separa el texto por comas y devuelve los recursos reales.
+
+        Descarta vacíos y 'Ninguno', recorta espacios y elimina duplicados
+        conservando el orden de aparición. '' o 'Ninguno' devuelven [].
+        """
+        if not texto:
+            return []
+        vistos = []
+        for parte in texto.split(","):
+            recurso = parte.strip()
+            if cls._es_recurso(recurso) and recurso not in vistos:
+                vistos.append(recurso)
+        return vistos
+
+    def crear_proceso(self, nombre, tamano_mb, recursos, prioritario, pasadas_cpu):
         nombre = nombre.strip()
         if not nombre:
             raise ValueError("Escribe un nombre para el proceso.")
@@ -87,8 +103,7 @@ class Simulador:
             raise ValueError("El tamaño debe ser de al menos 1 MB.")
         if pasadas_cpu < 1:
             raise ValueError("Las pasadas por CPU deben ser al menos 1.")
-        if prioridad < 1:
-            raise ValueError("La prioridad debe ser al menos 1.")
+        prioritario = bool(prioritario)
         if tamano_mb > self.memoria_mb:
             raise ValueError(
                 f"El proceso necesita {tamano_mb} MB, pero la memoria total es "
@@ -123,7 +138,7 @@ class Simulador:
             nombre=nombre,
             tamano_mb=tamano_mb,
             recursos=recursos.strip() or "Ninguno",
-            prioridad=prioridad,
+            prioritario=prioritario,
             pasadas_cpu=pasadas_cpu,
             restantes=pasadas_cpu,
         )
@@ -131,7 +146,10 @@ class Simulador:
         self._siguiente_id += 1
         self._instante += 1
         self._encolar(pid, ORIGEN_NUEVO)
-        self.eventos.insert(0, f"{pid} ({nombre}) creado y agregado a Listo.")
+        etiqueta_prio = "Prioritario" if prioritario else "No prioritario"
+        self.eventos.insert(
+            0, f"{pid} ({nombre}) creado ({etiqueta_prio}) y agregado a Listo."
+        )
         self._despachar()
         return proceso
 
@@ -155,11 +173,14 @@ class Simulador:
         raise ValueError("No se encontró el proceso seleccionado.")
 
     def _encolar(self, pid, origen):
-        """Inserta en la cola de Listos respetando el orden de llegada.
+        """Inserta en la cola de Listos respetando prioridad → origen → FIFO.
 
-        El orden de llegada (FIFO) manda; la prioridad de origen solo desempata
-        procesos que llegan en el mismo instante: primero los que vienen de
-        Ejecución, luego los que vienen de Bloqueado y por último los nuevos.
+        Criterio de orden:
+          1) Los procesos Prioritarios van delante de los No prioritarios.
+          2) Dentro de la misma prioridad manda el orden de llegada (FIFO).
+          3) Entre procesos que llegan en el mismo instante, el origen desempata:
+             primero los que vienen de Ejecución, luego de Bloqueado y por último
+             los nuevos.
         """
         proceso = self._proceso(pid)
         proceso.prioridad_cola = origen
@@ -168,8 +189,17 @@ class Simulador:
         indice = len(self._cola_listos) - 1
         while indice > 0:
             anterior = self._proceso(self._cola_listos[indice - 1])
-            mismo_instante = anterior.instante_cola == proceso.instante_cola
-            if mismo_instante and anterior.prioridad_cola > origen:
+            if proceso.prioritario and not anterior.prioritario:
+                # Un Prioritario adelanta a cualquier No prioritario.
+                adelantar = True
+            elif proceso.prioritario == anterior.prioritario:
+                # Misma prioridad: desempate por origen solo en llegada simultánea.
+                mismo_instante = anterior.instante_cola == proceso.instante_cola
+                adelantar = mismo_instante and anterior.prioridad_cola > origen
+            else:
+                # El anterior es Prioritario y el nuevo No: no puede adelantarlo.
+                adelantar = False
+            if adelantar:
                 self._cola_listos[indice - 1], self._cola_listos[indice] = (
                     self._cola_listos[indice],
                     self._cola_listos[indice - 1],
@@ -183,51 +213,102 @@ class Simulador:
         for proceso in self.procesos:
             if proceso.id == pid or proceso.estado == Estado.TERMINADO:
                 continue
-            if proceso.recursos.strip() != recurso:
-                continue
             if proceso.estado == Estado.LISTO:
-                return True
-            if proceso.estado == Estado.BLOQUEADO and proceso.espera_recurso == recurso:
+                if recurso in self._lista_recursos(proceso.recursos):
+                    return True
+            if proceso.estado == Estado.BLOQUEADO and recurso in proceso.espera_recursos:
                 return True
         return False
 
-    def _bloquear_por_recurso(self, proceso, recurso, propietario):
-        """El proceso pasa por Ejecución y queda Bloqueado sin consumir CPU."""
+    def _bloquear_por_recurso(self, proceso, faltantes):
+        """Recorre Listo → Ejecución → Bloqueado sin descontar pasadas de CPU.
+
+        'faltantes' es un dict {recurso: propietario} con los recursos que el
+        proceso necesita pero que otros retienen. El proceso ya venía de la cola
+        de Listos; deja explícito el recorrido por Ejecución antes de quedar
+        Bloqueado y lo registra en un único evento legible. No modifica
+        'restantes': no se consume ninguna pasada de CPU.
+        """
+        proceso.estado = Estado.LISTO
         proceso.estado = Estado.EJECUCION
         proceso.estado = Estado.BLOQUEADO
-        proceso.espera_recurso = recurso
+        proceso.espera_recursos = set(faltantes)
+        recursos_txt = ", ".join(faltantes)
+        propietarios_txt = ", ".join(dict.fromkeys(faltantes.values()))
+        plural = "los recursos" if len(faltantes) > 1 else "el recurso"
         self.eventos.insert(
             0,
-            f"{proceso.id} ({proceso.nombre}) pasó por Ejecución y quedó BLOQUEADO: "
-            f"recurso '{recurso}' retenido por {propietario} (sin consumir CPU).",
+            f"{proceso.id} ({proceso.nombre}) intentó {plural} '{recursos_txt}' "
+            f"(ocupado(s) por {propietarios_txt}): Listo → Ejecución → Bloqueado, "
+            f"sin consumir CPU.",
         )
 
     def _desbloquear_espera(self, recurso, excepto=None):
-        """Despierta solo a los procesos que esperan este recurso.
+        """Quita el recurso liberado del conjunto de espera de cada proceso.
 
-        Los bloqueados por otros recursos, o de forma manual, no se ven afectados.
+        Un proceso bloqueado por varios recursos solo despierta cuando ya no le
+        falta ninguno. Los bloqueados de forma manual (conjunto vacío) no se ven
+        afectados.
         """
         for proceso in self.procesos:
-            if proceso.id == excepto or proceso.espera_recurso != recurso:
+            if proceso.id == excepto or recurso not in proceso.espera_recursos:
+                continue
+            proceso.espera_recursos.discard(recurso)
+            if proceso.espera_recursos:
+                # Aún le faltan otros recursos: sigue esperando.
+                self.eventos.insert(
+                    0,
+                    f"{proceso.id} ({proceso.nombre}) sigue bloqueado; aún espera "
+                    f"'{', '.join(sorted(proceso.espera_recursos))}'.",
+                )
                 continue
             if proceso.estado == Estado.BLOQUEADO:
-                proceso.espera_recurso = None
                 proceso.estado = Estado.LISTO
                 self._encolar(proceso.id, ORIGEN_BLOQUEADO)
                 self.eventos.insert(
                     0,
-                    f"{proceso.id} ({proceso.nombre}) se desbloqueó (recurso '{recurso}' libre).",
+                    f"{proceso.id} ({proceso.nombre}) se desbloqueó "
+                    f"(ya tiene todos sus recursos).",
                 )
             elif proceso.estado == Estado.BLOQUEADO_SUSPENDIDO:
-                proceso.espera_recurso = None
                 proceso.estado = Estado.LISTO_SUSPENDIDO
                 self.eventos.insert(
                     0,
                     f"{proceso.id} ({proceso.nombre}) cambió a Listo Suspendido "
-                    f"(recurso '{recurso}' libre).",
+                    f"(ya tiene todos sus recursos).",
                 )
 
+    def _hay_prioritario_en_cola(self):
+        """True si algún proceso Listo en la cola es Prioritario."""
+        for pid in self._cola_listos:
+            proceso = self._proceso(pid)
+            if proceso.estado == Estado.LISTO and proceso.prioritario:
+                return True
+        return False
+
+    def _preemptar_si_corresponde(self):
+        """Desaloja al proceso en Ejecución si es No prioritario y hay un
+        Prioritario esperando en la cola de Listos.
+
+        El desalojado vuelve a Listo sin perder una pasada de CPU (no se toca
+        'restantes') y conserva los recursos que ya tenía asignados.
+        """
+        if self._ejecutando is None:
+            return
+        ejecutando = self._proceso(self._ejecutando)
+        if ejecutando.prioritario or not self._hay_prioritario_en_cola():
+            return
+        ejecutando.estado = Estado.LISTO
+        self._ejecutando = None
+        self._encolar(ejecutando.id, ORIGEN_EJECUCION)
+        self.eventos.insert(
+            0,
+            f"{ejecutando.id} ({ejecutando.nombre}) fue desalojado de Ejecución "
+            f"por un proceso Prioritario; vuelve a Listo sin perder su pasada.",
+        )
+
     def _despachar(self):
+        self._preemptar_si_corresponde()
         if self._ejecutando is not None:
             return
         while self._cola_listos:
@@ -237,17 +318,23 @@ class Simulador:
                 self._cola_listos.pop(0)
                 continue
 
-            recurso_requerido = proceso.recursos.strip()
-            if self._es_recurso(recurso_requerido):
-                propietario_actual = self._recursos_ocupados.get(recurso_requerido)
-                if propietario_actual is not None and propietario_actual != pid:
-                    # El recurso lo tiene otro: pasa por Ejecución y se bloquea
-                    # inmediatamente sin descontar tiempo de CPU.
+            recursos_requeridos = self._lista_recursos(proceso.recursos)
+            if recursos_requeridos:
+                faltantes = {}
+                for recurso in recursos_requeridos:
+                    propietario = self._recursos_ocupados.get(recurso)
+                    if propietario is not None and propietario != pid:
+                        faltantes[recurso] = propietario
+                if faltantes:
+                    # Falta al menos un recurso: adquisición todo-o-nada fallida.
+                    # Pasa por Ejecución y se bloquea sin descontar tiempo de CPU,
+                    # sin adquirir ninguno de los recursos libres.
                     self._cola_listos.pop(0)
-                    self._bloquear_por_recurso(proceso, recurso_requerido, propietario_actual)
+                    self._bloquear_por_recurso(proceso, faltantes)
                     continue
-                # Recurso libre: se le asigna.
-                self._recursos_ocupados[recurso_requerido] = pid
+                # Todos disponibles: se adquieren juntos.
+                for recurso in recursos_requeridos:
+                    self._recursos_ocupados[recurso] = pid
 
             self._cola_listos.pop(0)
             proceso.estado = Estado.EJECUCION
@@ -283,26 +370,28 @@ class Simulador:
             self.eventos.insert(0, f"{pid_ejecutado} ({proceso.nombre}) terminó.")
             self._liberar_recursos(pid_ejecutado)
         else:
-            recurso = proceso.recursos.strip()
-            retiene = (
-                self._es_recurso(recurso)
-                and self._recursos_ocupados.get(recurso) == pid_ejecutado
-            )
-            if (
-                retiene
-                and self._hay_competencia(recurso, pid_ejecutado)
-                and random.random() < self.probabilidad_soltar_recurso
-            ):
-                # Suelta el recurso y espera a que vuelva a liberarse.
-                del self._recursos_ocupados[recurso]
+            # Recursos que retiene este proceso y que además tienen competencia.
+            retenidos = [
+                rec
+                for rec, propietario in self._recursos_ocupados.items()
+                if propietario == pid_ejecutado
+            ]
+            disputados = [
+                rec for rec in retenidos if self._hay_competencia(rec, pid_ejecutado)
+            ]
+            if disputados and random.random() < self.probabilidad_soltar_recurso:
+                # Suelta solo los recursos disputados; conserva los demás.
+                for rec in disputados:
+                    del self._recursos_ocupados[rec]
                 proceso.estado = Estado.BLOQUEADO
-                proceso.espera_recurso = recurso
+                proceso.espera_recursos = set(disputados)
                 self.eventos.insert(
                     0,
-                    f"{pid_ejecutado} ({proceso.nombre}) soltó el recurso '{recurso}' "
-                    f"y pasa a BLOQUEADO hasta que se libere.",
+                    f"{pid_ejecutado} ({proceso.nombre}) soltó "
+                    f"'{', '.join(disputados)}' y pasa a BLOQUEADO hasta recuperarlo(s).",
                 )
-                self._desbloquear_espera(recurso, excepto=pid_ejecutado)
+                for rec in disputados:
+                    self._desbloquear_espera(rec, excepto=pid_ejecutado)
             else:
                 proceso.estado = Estado.LISTO
                 self._encolar(pid_ejecutado, ORIGEN_EJECUCION)
@@ -342,7 +431,7 @@ class Simulador:
         if proceso.estado != Estado.BLOQUEADO:
             raise ValueError("Selecciona un proceso que esté en estado Bloqueado.")
         proceso.estado = Estado.LISTO
-        proceso.espera_recurso = None
+        proceso.espera_recursos = set()
         self._instante += 1
         self._encolar(pid, ORIGEN_BLOQUEADO)
         self.eventos.insert(0, f"{pid} ({proceso.nombre}) volvió a Listo.")

@@ -51,7 +51,7 @@ class Aplicacion(tk.Tk):
             "nombre": tk.StringVar(),
             "tamano": tk.StringVar(value="4"),
             "recursos": tk.StringVar(value="Ninguno"),
-            "prioridad": tk.StringVar(value="1"),
+            "prioritario": tk.BooleanVar(value=False),
             "pasadas": tk.StringVar(value="3"),
         }
         self._configurar_estilos()
@@ -153,11 +153,10 @@ class Aplicacion(tk.Tk):
             ("nombre", "Nombre"),
             ("tamano", "Tamaño (MB)"),
             ("recursos", "Recursos requeridos"),
-            ("prioridad", "Prioridad (1-99)"),
             ("pasadas", "Pasadas por CPU"),
         ):
             ttk.Label(formulario, text=etiqueta, style="Card.TLabel").pack(anchor="w", pady=(7, 3))
-            if clave in ("tamano", "prioridad", "pasadas"):
+            if clave in ("tamano", "pasadas"):
                 entrada = ttk.Entry(formulario, textvariable=self.form_vars[clave], validate="key", validatecommand=vcmd_num)
             else:
                 entrada = ttk.Entry(formulario, textvariable=self.form_vars[clave])
@@ -166,9 +165,17 @@ class Aplicacion(tk.Tk):
             if clave == "nombre":
                 self.nombre_entry = entrada
 
+        ttk.Checkbutton(
+            formulario,
+            text="Prioritario (desaloja a los No prioritarios)",
+            variable=self.form_vars["prioritario"],
+        ).pack(anchor="w", pady=(7, 3))
+
         ttk.Label(
             formulario,
-            text="Los recursos compartidos (ej: Impresora, Disco) bloquean automáticamente los procesos competidores.",
+            text="Separa varios recursos con comas (ej: Impresora, Disco). El proceso "
+            "solo entra a Ejecución cuando tiene TODOS disponibles; si falta alguno, "
+            "se bloquea hasta conseguirlos.",
             style="Muted.TLabel",
             wraplength=230,
         ).pack(anchor="w", pady=(8, 12))
@@ -191,7 +198,7 @@ class Aplicacion(tk.Tk):
         columnas = ("id", "nombre", "tamano", "recursos", "prioridad", "pasadas", "restantes", "estado")
         self.tabla_procesos = self._crear_tabla(lista, columnas, {
             "id": ("ID", 65), "nombre": ("Nombre", 130), "tamano": ("MB", 55),
-            "recursos": ("Recursos", 120), "prioridad": ("Prioridad", 70),
+            "recursos": ("Recursos", 120), "prioridad": ("Prioridad", 110),
             "pasadas": ("Pasadas", 75), "restantes": ("Restantes", 75),
             "estado": ("Estado Actual", 150),
         })
@@ -319,7 +326,7 @@ class Aplicacion(tk.Tk):
                 self.form_vars["nombre"].get(),
                 int(self.form_vars["tamano"].get()),
                 self.form_vars["recursos"].get(),
-                int(self.form_vars["prioridad"].get()),
+                self.form_vars["prioritario"].get(),
                 int(self.form_vars["pasadas"].get()),
             )
         except ValueError as error:
@@ -452,7 +459,8 @@ class Aplicacion(tk.Tk):
                 tag = "SUSPENDIDO"
 
             self.tabla_procesos.insert("", "end", iid=p.id, values=(
-                p.id, p.nombre, p.tamano_mb, p.recursos, p.prioridad,
+                p.id, p.nombre, p.tamano_mb, p.recursos,
+                "Prioritario" if p.prioritario else "No prioritario",
                 p.pasadas_cpu, p.restantes, p.estado.value
             ), tags=(tag,))
 
@@ -582,24 +590,25 @@ class Aplicacion(tk.Tk):
             Estado.BLOQUEADO.value: COLOR_BLOQUEADO,
         }
 
-        conteos = {estado: 0 for estado in ESTADOS}
+        pids_por_estado = {estado: [] for estado in ESTADOS}
         for proceso in self.simulador.procesos:
-            conteos[proceso.estado.value] += 1
-        conteos["Nuevo"] = 0
+            pids_por_estado[proceso.estado.value].append(proceso.id)
+        pids_por_estado["Nuevo"] = []
 
         for estado, (cx, cy, rx, ry) in nodos.items():
-            conteo = conteos[estado]
+            pids = pids_por_estado[estado]
+            ocupado = bool(pids)
             col_base = colores_estado[estado]
-            
-            relleno = col_base if conteo > 0 else "#f1f5f9"
-            texto_col = BLANCO if conteo > 0 else TINTA
-            grosor = 3 if conteo > 0 else 1
+
+            relleno = col_base if ocupado else "#f1f5f9"
+            texto_col = BLANCO if ocupado else TINTA
+            grosor = 3 if ocupado else 1
 
             canvas.create_oval(
                 cx - rx, cy - ry, cx + rx, cy + ry,
-                fill=relleno, outline=col_base if conteo > 0 else GRIS, width=grosor,
+                fill=relleno, outline=col_base if ocupado else GRIS, width=grosor,
             )
-            etiqueta = f"{estado}\n{conteo} proceso" + ("" if conteo == 1 else "s")
+            etiqueta = f"{estado}\n{', '.join(pids)}" if ocupado else estado
             canvas.create_text(
                 cx, cy, text=etiqueta, fill=texto_col, width=rx * 1.8,
                 font=("TkDefaultFont", 10, "bold"),
