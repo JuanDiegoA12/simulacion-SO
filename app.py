@@ -122,6 +122,7 @@ class Aplicacion(tk.Tk):
         self.algoritmo_var = tk.StringVar(value=OPCIONES_ALGORITMO[0])
         self.estado_cpu_var = tk.StringVar(value="● CPU ACTIVA")
         self.cpu_actual_var = tk.StringVar(value="CPU en espera")
+        self.multiprog_var = tk.StringVar(value="Multiprogramación: 0")
         self._ultimo_historial = None
 
         self.form_vars = {
@@ -134,6 +135,7 @@ class Aplicacion(tk.Tk):
         self.recursos_check_vars = {
             rec: tk.BooleanVar(value=False) for rec in RECURSOS_SISTEMA
         }
+        self.otros_recursos_var = tk.StringVar(value="")
 
         self._registrar_validadores()
         self._configurar_estilos()
@@ -328,6 +330,17 @@ class Aplicacion(tk.Tk):
         )
         self.lbl_estado_cpu.pack(side="right", padx=12, pady=2)
 
+        self.lbl_multiprog = tk.Label(
+            banner,
+            textvariable=self.multiprog_var,
+            bg="#1e293b",
+            fg="#93c5fd",
+            font=("TkDefaultFont", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.lbl_multiprog.pack(side="right", padx=(0, 4), pady=2)
+
         # Barra de configuración de Hardware y Políticas
         marco_config_ext, configuracion = self._crear_tarjeta(self, padding=(12, 8))
         marco_config_ext.pack(fill="x", padx=16, pady=(8, 6))
@@ -336,7 +349,7 @@ class Aplicacion(tk.Tk):
         self._campo_desplegable(configuracion, "POLÍTICA FIJA", self.politica_fija_var, OPCIONES_POLITICA_FIJA, 16)
         self._campo_desplegable(configuracion, "ALGORITMO", self.algoritmo_var, OPCIONES_ALGORITMO, 20)
         self._campo_desplegable(configuracion, "MEMORIA RAM (MÁX 256 GB)", self.memoria_var, OPCIONES_RAM, 19)
-        self._campo_desplegable(configuracion, "MEM. VIRTUAL / DISCO", self.almacenamiento_var, OPCIONES_ALMACENAMIENTO, 18)
+        self._campo_desplegable(configuracion, "DISCO TOTAL (SWAP = 2× RAM)", self.almacenamiento_var, OPCIONES_ALMACENAMIENTO, 18)
 
         caja_tiempo = ttk.Frame(configuracion, style="Card.TFrame")
         caja_tiempo.pack(side="left", padx=(0, 8))
@@ -458,6 +471,15 @@ class Aplicacion(tk.Tk):
                 style="Card.TCheckbutton",
             )
             chk.grid(row=idx // 3, column=idx % 3, sticky="w", padx=(0, 8), pady=1)
+
+        ttk.Label(
+            formulario,
+            text="Otros recursos (separados por coma):",
+            style="Card.TLabel",
+        ).pack(anchor="w", pady=(4, 2))
+        ttk.Entry(formulario, textvariable=self.otros_recursos_var).pack(
+            fill="x", pady=(0, 4)
+        )
 
         ttk.Checkbutton(
             formulario,
@@ -728,6 +750,11 @@ class Aplicacion(tk.Tk):
         recursos_seleccionados = [
             rec for rec, var in self.recursos_check_vars.items() if var.get()
         ]
+        # Recursos nuevos escritos por el usuario, separados por coma.
+        for extra in self.otros_recursos_var.get().split(","):
+            extra = extra.strip()
+            if extra and extra not in recursos_seleccionados:
+                recursos_seleccionados.append(extra)
 
         try:
             proceso = self.simulador.crear_proceso(
@@ -745,6 +772,7 @@ class Aplicacion(tk.Tk):
         self.form_vars["nombre"].set("")
         for var in self.recursos_check_vars.values():
             var.set(False)
+        self.otros_recursos_var.set("")
         self._refrescar()
         self.notebook.select(self.pestana_procesos)
         self.tabla_procesos.selection_set(proceso.id)
@@ -971,6 +999,13 @@ class Aplicacion(tk.Tk):
             else "CPU en espera"
         )
 
+        grado = self.simulador.grado_multiprogramacion
+        maximo = self.simulador.max_multiprogramacion
+        if maximo is not None:
+            self.multiprog_var.set(f"Multiprogramación: {grado} / {maximo} en RAM")
+        else:
+            self.multiprog_var.set(f"Multiprogramación: {grado} en RAM")
+
         filas_memoria = []
         if self.simulador.modo_memoria == MODO_PAGINACION:
             self.titulo_memoria.configure(text="Paginación en Memoria Principal (Política Fija · Reemplazo FIFO)")
@@ -1010,9 +1045,14 @@ class Aplicacion(tk.Tk):
         self._dibujar_barras_memoria()
 
         self.resumen_virtual.configure(
-            text=f"Disco / Swap: {self.simulador.almacenamiento_mb} MB totales · "
-            f"Respaldo activo: {self.simulador.almacenamiento_usado_mb} MB · "
-            f"Fallos de página (FIFO): {self.simulador.total_fallos_pagina}"
+            text=(
+                f"RAM: {self.simulador.memoria_mb} MB · "
+                f"Memoria virtual (Swap = 2× RAM): {self.simulador.swap_mb} MB "
+                f"(usado {self.simulador.swap_usado_mb} · libre {self.simulador.swap_libre_mb}) · "
+                f"Disco total: {self.simulador.almacenamiento_mb} MB · "
+                f"Fallos de página (FIFO): {self.simulador.total_fallos_pagina}  |  "
+                f"Solo el swap respalda procesos; el resto del disco es almacenamiento."
+            )
         )
         self._reemplazar_filas(self.tabla_virtual, self.simulador.tabla_memoria_virtual())
 

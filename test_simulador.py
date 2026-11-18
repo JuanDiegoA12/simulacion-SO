@@ -1,6 +1,7 @@
 import unittest
 
 from simulador import (
+    MODO_DINAMICO,
     ORIGEN_BLOQUEADO,
     ORIGEN_EJECUCION,
     ORIGEN_NUEVO,
@@ -21,6 +22,45 @@ class SimuladorTests(unittest.TestCase):
             Simulador._lista_recursos("  Impresora ,  , Disco , Ninguno"),
             ["Impresora", "Disco"],
         )
+
+    # Recursos nuevos: un recurso no predefinido se registra en el sistema y el
+    # proceso lo adquiere al entrar a Ejecución.
+    def test_recurso_personalizado_se_registra_y_se_adquiere(self):
+        simulador = Simulador(16, 32)
+        proc = simulador.crear_proceso(
+            "Custom", 2, ["Impresora", "MiRecurso"], False, 2
+        )
+
+        self.assertEqual(proc.estado, Estado.EJECUCION)
+        # El recurso nuevo quedó registrado en el sistema.
+        self.assertIn("MiRecurso", simulador.recursos_disponibles)
+        # Y el proceso lo retiene junto con el predefinido.
+        self.assertEqual(simulador._recursos_ocupados.get("MiRecurso"), proc.id)
+        self.assertEqual(simulador._recursos_ocupados.get("Impresora"), proc.id)
+
+    # Memoria virtual: el swap es 2× la RAM, independiente del disco total.
+    def test_swap_es_doble_de_la_ram(self):
+        simulador = Simulador(64, 256)
+        self.assertEqual(simulador.swap_mb, 128)  # 2 × 64
+        self.assertEqual(simulador.almacenamiento_mb, 256)  # disco total aparte
+        self.assertEqual(simulador.swap_libre_mb, 128)
+
+    # Memoria virtual: el disco debe poder contener el swap (2× RAM).
+    def test_disco_insuficiente_para_swap_es_error(self):
+        with self.assertRaisesRegex(ValueError, "swap"):
+            Simulador(64, 100)  # 100 < 2×64 = 128
+
+    # Memoria virtual: el respaldo de procesos se limita al swap, no al disco.
+    def test_respaldo_limitado_al_swap_no_al_disco(self):
+        # RAM 8 → swap 16; disco grande (64) que NO debe usarse como límite.
+        simulador = Simulador(8, 64)
+        self.assertEqual(simulador.swap_mb, 16)
+        # Un proceso de 10 MB cabe en el swap de 16.
+        simulador.crear_proceso("A", 10, "Ninguno", False, 1)
+        self.assertEqual(simulador.swap_libre_mb, 6)
+        # Otro de 8 MB ya no cabe en el swap (6 libres), aunque el disco tenga sitio.
+        with self.assertRaisesRegex(ValueError, "Swap"):
+            simulador.crear_proceso("B", 8, "Ninguno", False, 1)
 
     def test_procesos_se_atienden_por_orden_de_llegada(self):
         simulador = Simulador(16, 32)
@@ -135,6 +175,31 @@ class SimuladorTests(unittest.TestCase):
         self.assertIn("Impresora", evento)
         self.assertIn(primero.id, evento)
 
+    # Desbloqueo por recurso: el proceso se detiene un ciclo visible en Listo
+    # antes de entrar a Ejecución, y el log deja constancia de la secuencia.
+    def test_desbloqueo_por_recurso_se_detiene_un_ciclo_en_listo(self):
+        simulador = Simulador(32, 64, probabilidad_soltar_recurso=0)
+        uno = simulador.crear_proceso("Uno", 2, "Impresora", False, 2)
+        dos = simulador.crear_proceso("Dos", 2, "Impresora", False, 2)
+
+        # Avance 1: Uno cede turno conservando la Impresora; Dos queda BLOQUEADO.
+        simulador.avanzar()
+        self.assertEqual(dos.estado, Estado.BLOQUEADO)
+
+        # Avances hasta que Uno termina y libera la Impresora: Dos pasa a Listo
+        # pero NO entra a Ejecución en ese mismo tick (se queda visible en Listo).
+        while uno.estado != Estado.TERMINADO:
+            simulador.avanzar()
+        self.assertEqual(dos.estado, Estado.LISTO)
+        self.assertTrue(
+            any(dos.id in e and "→ Listo" in e for e in simulador.eventos),
+            "falta el evento de paso por Listo al desbloquearse",
+        )
+
+        # Siguiente tick de CPU: ahora sí entra a Ejecución.
+        simulador.avanzar()
+        self.assertEqual(dos.estado, Estado.EJECUCION)
+
     # Requisito 4: con competencia, el proceso puede soltar el recurso al
     # terminar su turno y pasa a Bloqueado hasta que vuelva a liberarse.
     def test_proceso_suelta_recurso_al_competir_y_se_bloquea(self):
@@ -165,14 +230,21 @@ class SimuladorTests(unittest.TestCase):
         primero = simulador.crear_proceso("Uno", 2, "Impresora", False, 6)
         segundo = simulador.crear_proceso("Dos", 2, "Impresora", False, 6)
 
-        propietarios = set()
-        for _ in range(6):
+        # Con la detención en Listo, quien ejecuta una pasada y suelta el recurso
+        # queda bloqueado al cerrar el tick, por lo que proceso_ejecutando al
+        # final suele ser None. Para comprobar que el recurso alterna entre ambos
+        # (no hay bloqueo eterno) contamos quién entró a Ejecución según el log.
+        for _ in range(16):
             simulador.avanzar()
-            propietario = simulador._recursos_ocupados.get("Impresora")
-            if propietario:
-                propietarios.add(propietario)
+        ejecutaron = set()
+        for evento in simulador.eventos:
+            if "entra a Ejecución" in evento:
+                if primero.id in evento:
+                    ejecutaron.add(primero.id)
+                if segundo.id in evento:
+                    ejecutaron.add(segundo.id)
 
-        self.assertEqual(propietarios, {primero.id, segundo.id})
+        self.assertEqual(ejecutaron, {primero.id, segundo.id})
 
     # Requisito 4: liberar un recurso solo desbloquea a quien lo espera.
     def test_liberar_recurso_solo_desbloquea_a_quien_lo_espera(self):
@@ -336,6 +408,84 @@ class SimuladorTests(unittest.TestCase):
         self.assertNotEqual(solo.estado, Estado.BLOQUEADO)
         self.assertEqual(simulador._recursos_ocupados.get("Impresora"), solo.id)
         self.assertEqual(simulador._recursos_ocupados.get("Disco"), solo.id)
+
+    # Swap-out automático: si un proceso nuevo no cabe en RAM, el sistema
+    # suspende a un Bloqueado residente (no prioritario) para hacerle sitio.
+    def test_swap_out_automatico_suspende_bloqueado_para_admitir(self):
+        simulador = Simulador(8, 32, modo_memoria=MODO_DINAMICO, probabilidad_soltar_recurso=0)
+        p1 = simulador.crear_proceso("P1", 4, "Impresora", False, 5)
+        p2 = simulador.crear_proceso("P2", 4, "Impresora", False, 5)
+        # P1 ejecuta reteniendo la Impresora; P2 cede turno y se bloquea por ella,
+        # pero ocupa su partición en RAM (residente).
+        simulador.avanzar()
+        self.assertEqual(p2.estado, Estado.BLOQUEADO)
+        self.assertEqual(simulador.memoria_libre_mb, 0)  # RAM llena
+
+        # Un proceso nuevo de 4 MB no cabe: debe suspenderse P2 (Bloqueado) para
+        # admitirlo, en vez de dejar al nuevo en Listo suspendido.
+        p3 = simulador.crear_proceso("P3", 4, "Ninguno", False, 3)
+        self.assertEqual(p2.estado, Estado.BLOQUEADO_SUSPENDIDO)
+        self.assertNotEqual(p3.estado, Estado.LISTO_SUSPENDIDO)
+
+    # Swap-out automático: nunca se suspende un proceso Prioritario.
+    def test_swap_out_no_suspende_prioritarios(self):
+        simulador = Simulador(8, 32, modo_memoria=MODO_DINAMICO, probabilidad_soltar_recurso=0)
+        p1 = simulador.crear_proceso("P1", 4, "Impresora", False, 5)
+        # P2 Prioritario bloqueado por la Impresora, residente en RAM.
+        p2 = simulador.crear_proceso("P2", 4, "Impresora", True, 5)
+        simulador.avanzar()
+        self.assertEqual(p2.estado, Estado.BLOQUEADO)
+
+        # El nuevo no cabe y el único bloqueado residente es Prioritario:
+        # no se le suspende, así que el nuevo queda en Listo suspendido.
+        p3 = simulador.crear_proceso("P3", 4, "Ninguno", False, 3)
+        self.assertEqual(p2.estado, Estado.BLOQUEADO)  # intacto
+        self.assertEqual(p3.estado, Estado.LISTO_SUSPENDIDO)
+
+    # Reactivación automática: un Bloqueado suspendido vuelve a Bloqueado al
+    # haber RAM, conservando su espera de recursos (aunque sigan ocupados).
+    def test_bloqueado_suspendido_vuelve_a_bloqueado_al_liberarse_ram(self):
+        simulador = Simulador(8, 32, modo_memoria=MODO_DINAMICO, probabilidad_soltar_recurso=0)
+        p1 = simulador.crear_proceso("P1", 4, "Impresora", False, 2)
+        p2 = simulador.crear_proceso("P2", 4, "Impresora", False, 5)
+        simulador.avanzar()
+        self.assertEqual(p2.estado, Estado.BLOQUEADO)
+
+        # P3 fuerza el swap-out de P2.
+        p3 = simulador.crear_proceso("P3", 4, "Ninguno", False, 1)
+        self.assertEqual(p2.estado, Estado.BLOQUEADO_SUSPENDIDO)
+        self.assertIn("Impresora", p2.espera_recursos)
+
+        # Al avanzar, P1 y P3 terminan y liberan RAM; P2 deja de estar suspendido
+        # (vuelve a RAM como Bloqueado, o se desbloquea si ya tiene el recurso).
+        for _ in range(8):
+            simulador.avanzar()
+        self.assertNotEqual(p2.estado, Estado.BLOQUEADO_SUSPENDIDO)
+
+    # Control de carga: el grado de multiprogramación cuenta los procesos
+    # residentes en RAM (Ejecución + Listo + Bloqueado), no los suspendidos.
+    def test_grado_multiprogramacion_cuenta_residentes(self):
+        simulador = Simulador(8, 32, modo_memoria=MODO_DINAMICO, probabilidad_soltar_recurso=0)
+        p1 = simulador.crear_proceso("P1", 4, "Impresora", False, 5)
+        p2 = simulador.crear_proceso("P2", 4, "Impresora", False, 5)
+        simulador.avanzar()  # P1 ejecuta, P2 bloqueado; ambos residentes
+        self.assertEqual(simulador.grado_multiprogramacion, 2)
+
+        # Al forzar el swap-out de P2, el grado baja a 1 (P2 queda suspendido).
+        simulador.crear_proceso("P3", 4, "Ninguno", False, 1)
+        self.assertEqual(p2.estado, Estado.BLOQUEADO_SUSPENDIDO)
+        residentes = sum(
+            1
+            for p in simulador.procesos
+            if p.estado in (Estado.EJECUCION, Estado.LISTO, Estado.BLOQUEADO)
+        )
+        self.assertEqual(simulador.grado_multiprogramacion, residentes)
+
+    # Control de carga: el máximo teórico en paginación = marcos // marcos_fijos.
+    def test_max_multiprogramacion_en_paginacion(self):
+        simulador = Simulador(64, 256, marcos_fijos_por_proceso=4)
+        esperado = max(1, simulador.total_marcos // 4)
+        self.assertEqual(simulador.max_multiprogramacion, esperado)
 
 
 if __name__ == "__main__":
